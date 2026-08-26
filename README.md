@@ -1,4 +1,7 @@
-# Real-World Code for RTNav: Towards Real-Time Zero-Shot Object Navigation
+# RTNav Real-World
+
+Real-world deployment for
+**[RTNav: Towards Real-Time Zero-Shot Object Navigation →](https://github.com/generalroboticslab/RTNav)**
 
 Run RTNav on a real Stretch 3 with a Jetson AGX Thor as the compute host. The
 robot publishes ROS 1 data, a bridge container exposes it as ROS 2 `/obs/*`
