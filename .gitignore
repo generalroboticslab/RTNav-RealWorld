@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.eggs/
+
+# Docker
+docker/.env
+
+# Editors
+.vscode/
+.idea/
+*.swp
+
+# Misc
+TODO.md
+*.log
+
+.claude/
+
+# Generated experiment / calibration output
+experiments/
+runs/
+final_experiments/
+
+data/

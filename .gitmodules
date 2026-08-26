@@ -1,0 +1,4 @@
+[submodule "rt_ovn"]
+	path = rt_ovn
+	url = git@github.com:generalroboticslab/RTNav.git
+	branch = thor

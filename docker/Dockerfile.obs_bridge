@@ -1,0 +1,79 @@
+# Builds the Thor-side observation bridge. Runs src/env/launch.py:
+#   obs_node.py  ROS1 camera + TF  ->  /obs/{rgb,depth,gps,compass,camera_pose,camera_info}
+#   bridge.py    ros1_bridge       ->  the same topics on ROS2, for the agent container
+#
+#   docker build -t stretch-real-obs-bridge -f docker/Dockerfile.obs_bridge .
+
+FROM ros:noetic-ros-base-focal
+
+ENV DEBIAN_FRONTEND=noninteractive \
+    PYTHONUNBUFFERED=1 \
+    MAMBA_ROOT_PREFIX=/opt/conda \
+    PATH=/opt/conda/bin:/opt/conda/condabin:/usr/local/bin:${PATH} \
+    RMW_IMPLEMENTATION=rmw_cyclonedds_cpp \
+    CYCLONEDDS_URI=file:///opt/stretch-real/cyclonedds_loopback.xml
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates curl git build-essential cmake python3-pip \
+        ros-noetic-tf2-ros ros-noetic-image-transport-plugins ros-noetic-cv-bridge \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN pip3 install --no-cache-dir --upgrade "pip==25.0.1" \
+    && pip3 install --no-cache-dir --ignore-installed \
+        "numpy==1.23.5" "scipy==1.10.1" "opencv-python==4.6.0.66" \
+    && pip3 check \
+    && python3 -c "import cv2, numpy, scipy; print('ROS1 Python stack:', numpy.__version__, scipy.__version__, cv2.__version__)"
+
+ARG TARGETARCH
+RUN case "${TARGETARCH}" in \
+        amd64) MAMBA_PLATFORM=linux-64 ;; \
+        arm64) MAMBA_PLATFORM=linux-aarch64 ;; \
+        *) echo "Unsupported Docker architecture: ${TARGETARCH}" >&2; exit 1 ;; \
+    esac \
+    && curl -L "https://micro.mamba.pm/api/micromamba/${MAMBA_PLATFORM}/latest" \
+        | tar -xvj bin/micromamba -O > /usr/local/bin/micromamba \
+    && chmod +x /usr/local/bin/micromamba \
+    && micromamba env create -y -n humble \
+        -c conda-forge -c robostack-staging \
+        python=3.11 \
+        ros-humble-ros-base ros-humble-rmw-cyclonedds-cpp \
+        ros-humble-message-filters \
+        colcon-common-extensions compilers cmake libboost-devel "empy=3.3.4" \
+        numpy scipy \
+    && micromamba run -n humble pip install --no-cache-dir "rerun-sdk==0.20.3" \
+    && micromamba clean --index-cache --yes
+
+# Only the ROS 2 side of this bridge uses CycloneDDS. ROS 1 communication with
+# the robot remains on the interface selected by ROS_IP/ROS_MASTER_URI.
+COPY docker/cyclonedds_loopback.xml /opt/stretch-real/cyclonedds_loopback.xml
+
+WORKDIR /opt/bridge_ws
+RUN git clone --depth 1 https://github.com/ros2/ros1_bridge.git src/ros1_bridge \
+    && bash -c 'source /opt/ros/noetic/setup.bash \
+    && eval "$(micromamba shell hook --shell bash)" \
+    && micromamba activate humble \
+    && export PYTHONPATH="/opt/ros/noetic/lib/python3/dist-packages:${PYTHONPATH}" \
+    && export LDFLAGS="${LDFLAGS:-} -Wl,-rpath-link,/usr/lib/$(/usr/bin/gcc -print-multiarch) -Wl,--no-as-needed /usr/lib/$(/usr/bin/gcc -print-multiarch)/libm.so -Wl,--as-needed" \
+    && colcon build --packages-select ros1_bridge --cmake-force-configure \
+        --cmake-args -DBUILD_TESTING=OFF'
+
+RUN { echo '#!/bin/bash'; \
+      echo 'set -e'; \
+      echo 'source /opt/ros/noetic/setup.bash'; \
+      echo 'exec "$@"'; \
+    } > /opt/entrypoint.sh \
+    && chmod +x /opt/entrypoint.sh
+
+RUN { echo '# source this to get ros2 in the current shell:  . /opt/humble.sh'; \
+      echo 'eval "$(micromamba shell hook --shell bash)"'; \
+      echo 'micromamba activate humble'; \
+      echo 'source /opt/bridge_ws/install/setup.bash'; \
+      echo '# humble site-packages must come first so ros2 finds humble msg bindings,'; \
+      echo '# not noetic ones from /opt/ros/noetic prepended by the entrypoint.'; \
+      echo 'export PYTHONPATH="/opt/conda/envs/humble/lib/python3.11/site-packages:${PYTHONPATH:-}"'; \
+      echo 'export LD_LIBRARY_PATH="/opt/ros/noetic/lib:/opt/conda/envs/humble/lib:${LD_LIBRARY_PATH:-}"'; \
+    } > /opt/humble.sh
+
+WORKDIR /workspace
+ENTRYPOINT ["/opt/entrypoint.sh"]
+CMD ["bash"]

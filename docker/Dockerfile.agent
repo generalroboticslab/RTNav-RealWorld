@@ -1,0 +1,41 @@
+# syntax=docker/dockerfile:1.7
+# The real-robot agent: RTNav driven by /obs/* instead of habitat. Runs on the
+# Jetson AGX Thor (vLLM + OWLv2 + MobileSAM), not on the robot.
+#
+# Layers real-robot deltas onto RTNav's own image — nothing it already does is
+# repeated here (mobile_sam, cpp_accel, ros_msgs, torch/vLLM, entrypoint).
+#
+# Build the Thor base first, from the stretch-real repository root:
+#   docker build -f rt_ovn/agents/rtnav/docker/Dockerfile \
+#                -t rt-ovn-agent:latest rt_ovn
+#   docker build -f docker/Dockerfile.agent -t stretch-real-agent .
+
+ARG BASE_IMAGE=rt-ovn-agent:latest
+FROM ${BASE_IMAGE}
+
+# The bridge and agent share the host network namespace, so DDS can stay on
+# loopback. This keeps ROS 2 alive across Wi-Fi route/interface changes.
+COPY docker/cyclonedds_loopback.xml /opt/stretch-real/cyclonedds_loopback.xml
+ENV CYCLONEDDS_URI=file:///opt/stretch-real/cyclonedds_loopback.xml
+
+# message_filters is the one package the base lacks: nothing in rt_ovn uses it,
+# but subscriber.py syncs rgb/depth/gps/camera_pose with it. The rest are ROS
+# base packages, listed so the dependency is explicit rather than inherited.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ros-humble-rclpy ros-humble-message-filters \
+        ros-humble-geometry-msgs ros-humble-nav-msgs ros-humble-sensor-msgs \
+        ros-humble-std-msgs ros-humble-std-srvs \
+    && rm -rf /var/lib/apt/lists/*
+
+# The Rerun viewer used with the Thor is version 0.22.1.
+# scikit-fmm backs L3MVN's FMMPlanner and is not in their list.
+RUN set -e; \
+    pip3 install --no-cache-dir rerun-sdk==0.22.1 scikit-fmm==2025.6.23; \
+    pip3 check > /tmp/pip-check.txt 2>&1 || true; \
+    cat /tmp/pip-check.txt; \
+    sed -i '/^nvidia-cusparselt-cu13 0\.8\.0 is not supported on this platform$/d' /tmp/pip-check.txt; \
+    test ! -s /tmp/pip-check.txt; \
+    rm /tmp/pip-check.txt; \
+    python3 -c "import rerun, skfmm; print('Stretch agent extras OK')"
+
+WORKDIR /workspace
